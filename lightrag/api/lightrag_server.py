@@ -377,7 +377,7 @@ def create_app(args):
                     "Gunicorn Mode: postpone shared storage finalization to master process"
                 )
 
-    # Initialize FastAPI
+    # Initialize FastAPI (no root_path - we'll prefix routes manually)
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -386,13 +386,26 @@ def create_app(args):
         + (" (API-Key Enabled)" if api_key else "")
         + "\n\n[View ReDoc documentation](/redoc)"
     )
+    # Get API prefix from args (default: empty string = no prefix)
+    api_prefix = getattr(args, "api_prefix", "") or ""
+    webui_path = getattr(args, "webui_path", "/webui") or "/webui"
+
+    # Calculate prefixed paths for direct routes
+    docs_path = f"{api_prefix}/docs" if api_prefix else "/docs"
+    redoc_path = f"{api_prefix}/redoc" if api_prefix else "/redoc"
+    openapi_path = f"{api_prefix}/openapi.json" if api_prefix else "/openapi.json"
+    health_path = f"{api_prefix}/health" if api_prefix else "/health"
+    login_path = f"{api_prefix}/login" if api_prefix else "/login"
+    auth_status_path = f"{api_prefix}/auth-status" if api_prefix else "/auth-status"
+    root_path = api_prefix or "/"
+
     app_kwargs = {
         "title": "LightRAG Server API",
         "description": swagger_description,
         "version": __api_version__,
-        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
+        "openapi_url": openapi_path,  # Use prefixed OpenAPI URL
         "docs_url": None,  # Disable default docs, we'll create custom endpoint
-        "redoc_url": "/redoc",  # Explicitly set redoc URL
+        "redoc_url": redoc_path,  # Use prefixed redoc URL
         "lifespan": lifespan,
     }
 
@@ -1175,36 +1188,51 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
-    # Add routes
+    # Add routes with API prefix support
+    # Note: root_path is already set on the app, but we also need to handle
+    # the Ollama API mount point which uses a different prefix pattern
     app.include_router(
         create_document_routes(
             rag,
             doc_manager,
             api_key,
-        )
+        ),
+        prefix=f"{api_prefix}/documents" if api_prefix else "/documents",
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(
+        create_query_routes(rag, api_key, args.top_k),
+        prefix=api_prefix,
+    )
+    app.include_router(
+        create_graph_routes(rag, api_key),
+        prefix=api_prefix,
+    )
 
-    # Add Ollama API routes
+    # Add Ollama API routes with prefix
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
-    app.include_router(ollama_api.router, prefix="/api")
+    ollama_prefix = f"{api_prefix}/api" if api_prefix else "/api"
+    app.include_router(ollama_api.router, prefix=ollama_prefix)
 
     # Custom Swagger UI endpoint for offline support
-    @app.get("/docs", include_in_schema=False)
+    # With root_path, these will be accessible at the prefixed path
+    docs_path = f"{api_prefix}/docs" if api_prefix else "/docs"
+    redoc_path = f"{api_prefix}/redoc" if api_prefix else "/redoc"
+    openapi_path = f"{api_prefix}/openapi.json" if api_prefix else "/openapi.json"
+
+    @app.get(docs_path, include_in_schema=False)
     async def custom_swagger_ui_html():
         """Custom Swagger UI HTML with local static files"""
         return get_swagger_ui_html(
             openapi_url=app.openapi_url,
             title=app.title + " - Swagger UI",
-            oauth2_redirect_url="/docs/oauth2-redirect",
+            oauth2_redirect_url=f"{docs_path}/oauth2-redirect",
             swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
             swagger_css_url="/static/swagger-ui/swagger-ui.css",
             swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
             swagger_ui_parameters=app.swagger_ui_parameters,
         )
 
-    @app.get("/docs/oauth2-redirect", include_in_schema=False)
+    @app.get(f"{docs_path}/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():
         """OAuth2 redirect for Swagger UI"""
         return get_swagger_ui_oauth2_redirect_html()
@@ -1213,11 +1241,12 @@ def create_app(args):
     async def redirect_to_webui():
         """Redirect root path based on WebUI availability"""
         if webui_assets_exist:
-            return RedirectResponse(url="/webui")
+            return RedirectResponse(url=f"{webui_path}/")
         else:
-            return RedirectResponse(url="/docs")
+            return RedirectResponse(url=f"{api_prefix}/docs" if api_prefix else "/docs")
 
-    @app.get("/auth-status")
+    auth_path = f"{api_prefix}/auth-status" if api_prefix else "/auth-status"
+    @app.get(auth_path)
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
 
@@ -1247,7 +1276,7 @@ def create_app(args):
             "webui_description": webui_description,
         }
 
-    @app.post("/login")
+    @app.post(login_path)
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
@@ -1283,7 +1312,7 @@ def create_app(args):
         }
 
     @app.get(
-        "/health",
+        health_path,
         dependencies=[Depends(combined_auth)],
         summary="Get system health and configuration status",
         description="Returns comprehensive system status including WebUI availability, configuration, and operational metrics",
@@ -1431,21 +1460,21 @@ def create_app(args):
         static_dir = Path(__file__).parent / "webui"
         static_dir.mkdir(exist_ok=True)
         app.mount(
-            "/webui",
+            webui_path,
             SmartStaticFiles(
                 directory=static_dir, html=True, check_dir=True
             ),  # Use SmartStaticFiles
             name="webui",
         )
-        logger.info("WebUI assets mounted at /webui")
+        logger.info(f"WebUI assets mounted at {webui_path}")
     else:
-        logger.info("WebUI assets not available, /webui route not mounted")
+        logger.info("WebUI assets not available, WebUI route not mounted")
 
-        # Add redirect for /webui when assets are not available
-        @app.get("/webui")
-        @app.get("/webui/")
+        # Add redirect for WebUI path when assets are not available
+        @app.get(webui_path)
+        @app.get(f"{webui_path}/")
         async def webui_redirect_to_docs():
-            """Redirect /webui to /docs when WebUI is not available"""
+            """Redirect WebUI path to /docs when WebUI is not available"""
             return RedirectResponse(url="/docs")
 
     return app
