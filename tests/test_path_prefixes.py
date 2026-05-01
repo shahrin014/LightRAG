@@ -1,78 +1,113 @@
 """
-Unit tests for API and WebUI path prefix support.
+Integration tests for API and WebUI path prefix support.
 
-Tests configurable prefixes:
-- API prefix: unit-test-back/api
-- WebUI prefix: unit-test-front/webui
-
-Verifies that routes are correctly mounted at prefixed paths
-and that default behavior is preserved when no prefix is set.
+Tests that routes are actually accessible at the correct prefixed paths
+and that unprefixed paths return 404 when a prefix is set.
 """
 
-# We need to mock the heavy imports to avoid import issues during collection
-# Instead, we'll test the logic by importing only the parsing function
+import os
+import sys
+from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
+
+import pytest
 
 
-class TestArgumentParsing:
-    """Test that CLI arguments are properly parsed."""
+@pytest.fixture
+def mock_args_api_prefix():
+    """Create mock args with API prefix."""
+    from lightrag.api.config import parse_args
 
-    def test_api_prefix_argument(self):
-        """Test that --api-prefix argument is accepted."""
-        from lightrag.api.config import parse_args
-        import sys
+    original_argv = sys.argv.copy()
+    try:
+        sys.argv = ['lightrag-server', '--api-prefix', '/test-api']
+        args = parse_args()
+        yield args
+    finally:
+        sys.argv = original_argv
 
-        # Save original argv
-        original_argv = sys.argv.copy()
 
-        try:
-            # Simulate command line with --api-prefix
-            sys.argv = ['lightrag-server', '--api-prefix', 'unit-test-back/api']
-            args = parse_args()
-            assert args.api_prefix == 'unit-test-back/api'
-        finally:
-            sys.argv = original_argv
+@pytest.fixture
+def mock_args_no_prefix():
+    """Create mock args without API prefix."""
+    from lightrag.api.config import parse_args
 
-    def test_webui_path_argument(self):
-        """Test that --webui-path argument is accepted."""
-        from lightrag.api.config import parse_args
-        import sys
+    original_argv = sys.argv.copy()
+    try:
+        sys.argv = ['lightrag-server']
+        args = parse_args()
+        yield args
+    finally:
+        sys.argv = original_argv
 
-        original_argv = sys.argv.copy()
 
-        try:
-            sys.argv = ['lightrag-server', '--webui-path', 'unit-test-front/webui']
-            args = parse_args()
-            assert args.webui_path == 'unit-test-front/webui'
-        finally:
-            sys.argv = original_argv
+class TestAPIPrefixIntegration:
+    """Test that API routes work at prefixed paths."""
 
-    def test_default_api_prefix(self):
-        """Test that API prefix defaults to empty string."""
-        from lightrag.api.config import parse_args
-        import sys
+    def test_routes_mounted_at_prefixed_paths(self, mock_args_api_prefix):
+        """Test that routes are accessible at prefixed paths."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
 
-        original_argv = sys.argv.copy()
+            # Test API docs accessible at prefixed path
+            response = client.get('/test-api/docs')
+            assert response.status_code == 200
 
-        try:
-            sys.argv = ['lightrag-server']
-            args = parse_args()
-            assert args.api_prefix == ''
-        finally:
-            sys.argv = original_argv
+            # Test openapi.json at prefixed path
+            response = client.get('/test-api/openapi.json')
+            assert response.status_code == 200
 
-    def test_default_webui_path(self):
-        """Test that WebUI path defaults to /webui."""
-        from lightrag.api.config import parse_args
-        import sys
+            # Test that unprefixed paths return 404
+            response = client.get('/docs')
+            assert response.status_code == 404
 
-        original_argv = sys.argv.copy()
+            response = client.get('/openapi.json')
+            assert response.status_code == 404
 
-        try:
-            sys.argv = ['lightrag-server']
-            args = parse_args()
-            assert args.webui_path == '/webui'
-        finally:
-            sys.argv = original_argv
+    def test_document_routes_prefixed(self, mock_args_api_prefix):
+        """Test document routes are at prefixed path (not duplicate)."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
+
+            # This should work (single /documents/, not /documents/documents/)
+            response = client.post(
+                '/test-api/documents/paginated',
+                json={},
+                headers={'Authorization': 'Bearer test'}
+            )
+            # Should not be 404 (not found) - may be 422 (validation) or other
+            # but NOT 404 which would indicate wrong path
+            assert response.status_code != 404
+
+
+class TestNoPrefixIntegration:
+    """Test that default behavior is preserved without prefixes."""
+
+    def test_routes_at_root_no_prefix(self, mock_args_no_prefix):
+        """Test that routes are accessible at root when no prefix."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_no_prefix)
+            client = TestClient(app)
+
+            # Test API docs accessible at root
+            response = client.get('/docs')
+            assert response.status_code == 200
+
+            # Test openapi.json at root
+            response = client.get('/openapi.json')
+            assert response.status_code == 200
+
+            # Test that prefixed paths return 404
+            response = client.get('/test-api/docs')
+            assert response.status_code == 404
 
 
 class TestEnvironmentVariables:
@@ -80,7 +115,6 @@ class TestEnvironmentVariables:
 
     def test_env_api_prefix(self):
         """Test LIGHTRAG_API_PREFIX environment variable."""
-        import os
         from lightrag.api.config import get_env_value
 
         os.environ['LIGHTRAG_API_PREFIX'] = 'unit-test-back/api'
@@ -92,7 +126,6 @@ class TestEnvironmentVariables:
 
     def test_env_webui_path(self):
         """Test LIGHTRAG_WEBUI_PATH environment variable."""
-        import os
         from lightrag.api.config import get_env_value
 
         os.environ['LIGHTRAG_WEBUI_PATH'] = 'unit-test-front/webui'
@@ -101,24 +134,3 @@ class TestEnvironmentVariables:
             assert value == 'unit-test-front/webui'
         finally:
             del os.environ['LIGHTRAG_WEBUI_PATH']
-
-
-class TestDefaultBehaviorPreserved:
-    """Test that default behavior is preserved without prefixes."""
-
-    def test_no_prefix_defaults(self):
-        """Test that defaults preserve existing behavior."""
-        from lightrag.api.config import parse_args
-        import sys
-
-        original_argv = sys.argv.copy()
-
-        try:
-            sys.argv = ['lightrag-server']
-            args = parse_args()
-
-            # Verify defaults
-            assert args.api_prefix == ''
-            assert args.webui_path == '/webui'
-        finally:
-            sys.argv = original_argv
