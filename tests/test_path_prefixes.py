@@ -1,8 +1,10 @@
 """
-Integration tests for API and WebUI path prefix support.
+Integration tests for API and WebUI path prefix support via root_path.
 
-Tests that routes are actually accessible at the correct prefixed paths
-and that unprefixed paths return 404 when a prefix is set.
+With the root_path approach, routes always stay at their natural paths
+(/docs, /health, /query, /documents/...). The api_prefix is passed to
+FastAPI's root_path parameter, which controls the servers URL in the
+OpenAPI spec for correct reverse proxy operation.
 """
 
 import os
@@ -41,86 +43,167 @@ def mock_args_no_prefix():
         sys.argv = original_argv
 
 
-class TestAPIPrefixIntegration:
-    """Test that API routes work at prefixed paths."""
+class TestRootPathConfiguration:
+    """Test that root_path is set correctly on the FastAPI app."""
 
-    def test_routes_mounted_at_prefixed_paths(self, mock_args_api_prefix):
-        """Test that routes are accessible at prefixed paths."""
+    def test_root_path_set_when_prefix_provided(self, mock_args_api_prefix):
+        """Test app.root_path reflects api_prefix."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_api_prefix)
+            assert app.root_path == "/test-api"
+
+    def test_root_path_none_when_no_prefix(self, mock_args_no_prefix):
+        """Test app.root_path is not set when no prefix is configured."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_no_prefix)
+            # When no prefix, root_path is None (not passed to FastAPI)
+            # FastAPI stores None as-is, which means no root_path injection
+            assert not app.root_path
+
+
+class TestRoutesAtNaturalPaths:
+    """Test that routes stay at their natural paths regardless of root_path."""
+
+    def test_routes_accessible_at_both_paths_with_prefix(self, mock_args_api_prefix):
+        """With root_path, routes work at both prefixed and natural paths.
+
+        FastAPI injects root_path into the ASGI scope, and Starlette strips
+        it from the path before matching. So /test-api/docs and /docs both work.
+        """
         with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
             mock_rag.return_value = MagicMock()
             from lightrag.api.lightrag_server import create_app
             app = create_app(mock_args_api_prefix)
             client = TestClient(app)
 
-            # Test API docs accessible at prefixed path
+            # Natural path works
+            response = client.get('/docs')
+            assert response.status_code == 200
+
+            response = client.get('/openapi.json')
+            assert response.status_code == 200
+
+            # Prefixed path also works (FastAPI strips root_path from scope)
             response = client.get('/test-api/docs')
             assert response.status_code == 200
 
-            # Test openapi.json at prefixed path
             response = client.get('/test-api/openapi.json')
             assert response.status_code == 200
 
-            # Test that unprefixed paths return 404
-            response = client.get('/docs')
-            assert response.status_code == 404
-
-            response = client.get('/openapi.json')
-            assert response.status_code == 404
-
-    def test_document_routes_prefixed(self, mock_args_api_prefix):
-        """Test document routes are at prefixed path (not duplicate)."""
+    def test_document_routes_at_natural_path(self, mock_args_api_prefix):
+        """Test document routes are at /documents/ (their router-level prefix)."""
         with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
             mock_rag.return_value = MagicMock()
             from lightrag.api.lightrag_server import create_app
             app = create_app(mock_args_api_prefix)
             client = TestClient(app)
 
-            # This should work (single /documents/, not /documents/documents/)
             response = client.post(
-                '/test-api/documents/paginated',
+                '/documents/paginated',
                 json={},
                 headers={'Authorization': 'Bearer test'}
             )
-            # Should not be 404 (not found) - may be 422 (validation) or other
-            # but NOT 404 which would indicate wrong path
             assert response.status_code != 404
 
-
-class TestNoPrefixIntegration:
-    """Test that default behavior is preserved without prefixes."""
-
-    def test_routes_at_root_no_prefix(self, mock_args_no_prefix):
-        """Test that routes are accessible at root when no prefix."""
+    def test_routes_accessible_at_root_no_prefix(self, mock_args_no_prefix):
+        """Test routes are at root when no prefix is set (default)."""
         with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
             mock_rag.return_value = MagicMock()
             from lightrag.api.lightrag_server import create_app
             app = create_app(mock_args_no_prefix)
             client = TestClient(app)
 
-            # Test API docs accessible at root
+            # API docs accessible at root
             response = client.get('/docs')
             assert response.status_code == 200
 
-            # Test openapi.json at root
+            # openapi.json at root
             response = client.get('/openapi.json')
             assert response.status_code == 200
 
-            # Test that prefixed paths return 404
+            # Prefixed paths return 404 when no root_path is configured
             response = client.get('/test-api/docs')
             assert response.status_code == 404
 
 
+class TestOpenAPISpecIntegration:
+    """Test that OpenAPI spec uses root_path for servers URL."""
+
+    def test_openapi_spec_has_servers_url_with_prefix(self, mock_args_api_prefix):
+        """Test OpenAPI spec servers URL includes the prefix via root_path."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
+
+            # OpenAPI JSON is served at the natural path
+            response = client.get('/openapi.json')
+            assert response.status_code == 200
+            spec = response.json()
+
+            # Servers URL should include the prefix
+            servers = spec.get("servers", [])
+            assert len(servers) > 0, "OpenAPI spec should have servers entry when root_path is set"
+            assert "/test-api" in servers[0].get("url", ""), (
+                f"Expected servers URL to contain /test-api, got: {servers[0].get('url')}"
+            )
+
+    def test_openapi_spec_no_servers_without_prefix(self, mock_args_no_prefix):
+        """Test OpenAPI spec has no servers entry when no root_path."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_no_prefix)
+            client = TestClient(app)
+
+            response = client.get('/openapi.json')
+            assert response.status_code == 200
+            spec = response.json()
+
+            # No servers when root_path is None/empty
+            assert "servers" not in spec or spec["servers"] is None
+
+    def test_openapi_spec_paths_at_natural_paths(self, mock_args_api_prefix):
+        """Test OpenAPI spec paths are at natural paths (not prefixed)."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
+
+            response = client.get('/openapi.json')
+            assert response.status_code == 200
+            spec = response.json()
+            paths = spec.get("paths", {})
+
+            # Paths should be at natural paths
+            for path in paths:
+                if path == "/":
+                    continue
+                assert not path.startswith("/test-api/"), (
+                    f"Path {path} should not be prefixed with /test-api/ in root_path mode"
+                )
+
+
 class TestWebUIPrefixIntegration:
-    """Test that WebUI is served at the correct prefixed path."""
+    """Test that WebUI is served at the correct path."""
 
     def test_webui_at_prefixed_path(self, mock_args_api_prefix):
-        """Test WebUI assets are at the prefixed path."""
+        """Test WebUI assets are at the prefixed path.
+
+        When root_path is set, the WebUI is served under {root_path}{webui_path}
+        because FastAPI injects root_path into the ASGI scope.
+        """
         with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
             mock_rag.return_value = MagicMock()
             from lightrag.api.lightrag_server import create_app
             from lightrag.api.config import parse_args
 
-            # Set webui path in args
             original_argv = sys.argv.copy()
             try:
                 sys.argv = ['lightrag-server', '--api-prefix', '/test-api', '--webui-path', '/test-webui']
@@ -128,14 +211,34 @@ class TestWebUIPrefixIntegration:
                 app = create_app(args)
                 client = TestClient(app)
 
-                # Test that prefixed WebUI path works
-                response = client.get('/test-webui/')
-                # Should be 200 (if assets exist) or 307 redirect (if not)
+                # With root_path="/test-api" and webui_path="/test-webui",
+                # the WebUI is accessible at /test-api/test-webui/
+                # (root_path + webui_path, since FastAPI injects root_path)
+                response = client.get('/test-api/test-webui/')
                 assert response.status_code in [200, 307]
             finally:
                 sys.argv = original_argv
 
-    def test_webui_not_at_unprefixed_path_with_prefix(self, mock_args_api_prefix):
+    def test_webui_without_api_prefix(self):
+        """Test WebUI works with custom path when no API prefix is set."""
+        with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+            from lightrag.api.config import parse_args
+
+            original_argv = sys.argv.copy()
+            try:
+                sys.argv = ['lightrag-server', '--webui-path', '/test-webui']
+                args = parse_args()
+                app = create_app(args)
+                client = TestClient(app)
+
+                response = client.get('/test-webui/')
+                assert response.status_code in [200, 307]
+            finally:
+                sys.argv = original_argv
+
+    def test_webui_not_at_default_path_with_custom(self, mock_args_api_prefix):
         """Test /webui returns 404 when custom path is set."""
         with patch('lightrag.api.lightrag_server.LightRAG') as mock_rag:
             mock_rag.return_value = MagicMock()

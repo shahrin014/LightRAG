@@ -5,6 +5,9 @@
 # cross-architecture emulation issues during multi-platform builds.
 FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
+ARG VITE_WEBUI_PREFIX=/webui/
+ARG VITE_API_PREFIX=
+
 WORKDIR /app
 
 # Copy frontend source code
@@ -14,7 +17,7 @@ COPY lightrag_webui/ ./lightrag_webui/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     cd lightrag_webui \
     && bun install --frozen-lockfile \
-    && bun run build
+    && VITE_WEBUI_PREFIX=${VITE_WEBUI_PREFIX} VITE_API_PREFIX=${VITE_API_PREFIX} bun run build
 
 # Python build stage - using uv for faster package installation
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder

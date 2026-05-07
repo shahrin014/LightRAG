@@ -1,0 +1,72 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${HOST:-0.0.0.0}:9620:9620"
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      LIGHTRAG_API_PREFIX: "${LIGHTRAG_API_PREFIX:-/test-api}"
+      LIGHTRAG_WEBUI_PATH: "${LIGHTRAG_WEBUI_PATH:-/test-webui}"
+      UPSTREAM_PORT: "9621"
+    command:
+      - sh
+      - -c
+      - |
+        cat > /etc/nginx/conf.d/default.conf << 'NGINX'
+        server {
+            listen 9620;
+            access_log /dev/stdout;
+            error_log /dev/stderr;
+
+            # WebUI - proxy with full path
+            location ${LIGHTRAG_WEBUI_PATH}/ {
+                proxy_pass http://lightrag:${UPSTREAM_PORT}${LIGHTRAG_WEBUI_PATH}/;
+                proxy_set_header Host $$host;
+                proxy_set_header X-Real-IP $$remote_addr;
+                proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $$scheme;
+                proxy_set_header X-Script-Name "";
+            }
+
+            # API - strip prefix before proxying to LightRAG
+            # FastAPI root_path tells Swagger UI where the API lives
+            location ${LIGHTRAG_API_PREFIX}/ {
+                rewrite ^${LIGHTRAG_API_PREFIX}(/.*)$$ $$1 break;
+                proxy_pass http://lightrag:${UPSTREAM_PORT};
+                proxy_set_header Host $$host;
+                proxy_set_header X-Real-IP $$remote_addr;
+                proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $$scheme;
+                proxy_set_header X-Script-Name ${LIGHTRAG_API_PREFIX};
+            }
+
+            # Root redirect to WebUI
+            location / {
+                return 302 ${LIGHTRAG_WEBUI_PATH}/;
+            }
+        }
+        NGINX
+        nginx -g 'daemon off;'
+
+    depends_on:
+      - lightrag
+
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HOST:-0.0.0.0}:9621:9621"
+    volumes:
+      - ./.env:/app/.env
+    environment:
+      WORKING_DIR: "/tmp/rag_storage"
+      INPUT_DIR: "/tmp/inputs"
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      LIGHTRAG_API_PREFIX: "${LIGHTRAG_API_PREFIX:-/test-api}"
+      LIGHTRAG_WEBUI_PATH: "${LIGHTRAG_WEBUI_PATH:-/test-webui}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -34,6 +34,8 @@ services:
       MILVUS_URI: "http://milvus:19530"
       INPUT_DIR: "/app/data/inputs"
       MEMGRAPH_URI: "bolt://host.docker.internal:7687"
+      LIGHTRAG_API_PREFIX: "${LIGHTRAG_API_PREFIX:-}"
+      LIGHTRAG_WEBUI_PATH: "${LIGHTRAG_WEBUI_PATH:-/webui}"
     depends_on:
       vllm-embed:
         condition: service_healthy
