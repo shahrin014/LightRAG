@@ -3,17 +3,14 @@ import path from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Use relative import instead of '@/lib/constants' path alias.
-// The '@' alias is configured in this file's resolve.alias and only takes effect
-// during bundling — Node.js cannot resolve it when loading vite.config.ts itself.
-// Bun resolves tsconfig paths natively, masking the issue, but Node.js does not.
-import { webuiPrefix } from './src/lib/constants'
-
 // https://vite.dev/config/
 // Use functional config form so we can call loadEnv(). import.meta.env is only
 // available inside Bun's runtime; Node.js leaves it undefined, crashing the build.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+
+  // Get webuiPrefix from env or use default
+  const webuiPrefix = env.VITE_WEBUI_PREFIX || '/webui/'
 
   return {
     plugins: [react(), tailwindcss()],
@@ -44,7 +41,7 @@ export default defineConfig(({ mode }) => {
       }
     },
     server: {
-      proxy: env.VITE_API_PROXY === 'true' && env.VITE_API_ENDPOINTS ?
+      proxy: ((env.VITE_API_PROXY || 'false') === 'true' && env.VITE_API_ENDPOINTS) ?
         Object.fromEntries(
           env.VITE_API_ENDPOINTS.split(',').map(endpoint => [
             endpoint,

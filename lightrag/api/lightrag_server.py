@@ -385,18 +385,25 @@ def create_app(args):
         + (" (API-Key Enabled)" if api_key else "")
         + "\n\n[View ReDoc documentation](/redoc)"
     )
-    # Get API prefix and WebUI path from args or env vars
+    # Get API prefix from args (default: empty string = no prefix)
     api_prefix = getattr(args, "api_prefix", "") or ""
     webui_path = getattr(args, "webui_path", "/webui") or "/webui"
+
+    # Calculate prefixed paths for direct routes
+    docs_path = f"{api_prefix}/docs" if api_prefix else "/docs"
+    redoc_path = f"{api_prefix}/redoc" if api_prefix else "/redoc"
+    openapi_path = f"{api_prefix}/openapi.json" if api_prefix else "/openapi.json"
+    health_path = f"{api_prefix}/health" if api_prefix else "/health"
+    login_path = f"{api_prefix}/login" if api_prefix else "/login"
+    auth_status_path = f"{api_prefix}/auth-status" if api_prefix else "/auth-status"
 
     app_kwargs = {
         "title": "LightRAG Server API",
         "description": swagger_description,
         "version": __api_version__,
-        "openapi_url": "/openapi.json",
-        "docs_url": None,  # custom endpoint for offline Swagger support
-        "redoc_url": "/redoc",
-        "root_path": api_prefix if api_prefix else None,
+        "openapi_url": openapi_path,  # Use prefixed OpenAPI URL
+        "docs_url": None,  # Disable default docs, we'll create custom endpoint
+        "redoc_url": redoc_path,  # Use prefixed redoc URL
         "lifespan": lifespan,
     }
 
@@ -1179,32 +1186,51 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
-    # Add routes
-    # root_path is set on the app for reverse proxy support;
-    # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
-    app.include_router(create_document_routes(rag, doc_manager, api_key))
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    # Add routes with API prefix support
+    # Note: root_path is already set on the app, but we also need to handle
+    # the Ollama API mount point which uses a different prefix pattern
+    app.include_router(
+        create_document_routes(
+            rag,
+            doc_manager,
+            api_key,
+        ),
+        prefix=api_prefix,
+    )
+    app.include_router(
+        create_query_routes(rag, api_key, args.top_k),
+        prefix=api_prefix,
+    )
+    app.include_router(
+        create_graph_routes(rag, api_key),
+        prefix=api_prefix,
+    )
 
-    # Add Ollama API routes
+    # Add Ollama API routes with prefix
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
-    app.include_router(ollama_api.router, prefix="/api")
+    ollama_prefix = f"{api_prefix}/api" if api_prefix else "/api"
+    app.include_router(ollama_api.router, prefix=ollama_prefix)
 
     # Custom Swagger UI endpoint for offline support
-    @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html():
+    # With root_path, these will be accessible at the prefixed path
+    @app.get(docs_path, include_in_schema=False)
+    async def custom_swagger_ui_html(request: Request):
         """Custom Swagger UI HTML with local static files"""
+        # Read X-Script-Name header from reverse proxy (e.g., nginx)
+        # This allows Swagger UI to use the correct API prefix when accessed through a proxy
+        script_name = request.headers.get("X-Script-Name", "")
+
         return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
+            openapi_url=script_name + "/openapi.json" if script_name else app.openapi_url,
             title=app.title + " - Swagger UI",
-            oauth2_redirect_url="/docs/oauth2-redirect",
+            oauth2_redirect_url=script_name + "/docs/oauth2-redirect" if script_name else f"{docs_path}/oauth2-redirect",
             swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
             swagger_css_url="/static/swagger-ui/swagger-ui.css",
             swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
             swagger_ui_parameters=app.swagger_ui_parameters,
         )
 
-    @app.get("/docs/oauth2-redirect", include_in_schema=False)
+    @app.get(f"{docs_path}/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():
         """OAuth2 redirect for Swagger UI"""
         return get_swagger_ui_oauth2_redirect_html()
@@ -1215,9 +1241,9 @@ def create_app(args):
         if webui_assets_exist:
             return RedirectResponse(url=f"{webui_path}/")
         else:
-            return RedirectResponse(url="/docs")
+            return RedirectResponse(url=f"{api_prefix}/docs" if api_prefix else "/docs")
 
-    @app.get("/auth-status")
+    @app.get(auth_status_path)
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
 
@@ -1247,7 +1273,7 @@ def create_app(args):
             "webui_description": webui_description,
         }
 
-    @app.post("/login")
+    @app.post(login_path)
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
@@ -1283,7 +1309,7 @@ def create_app(args):
         }
 
     @app.get(
-        "/health",
+        health_path,
         dependencies=[Depends(combined_auth)],
         summary="Get system health and configuration status",
         description="Returns comprehensive system status including WebUI availability, configuration, and operational metrics",
