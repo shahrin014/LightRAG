@@ -1,72 +1,62 @@
 services:
   nginx:
     image: nginx:alpine
-    ports:
-      - "${HOST:-0.0.0.0}:9620:9620"
-    volumes:
-      - ./.env:/app/.env:ro
-    environment:
-      LIGHTRAG_API_PREFIX: "${LIGHTRAG_API_PREFIX:-/test-api}"
-      LIGHTRAG_WEBUI_PATH: "${LIGHTRAG_WEBUI_PATH:-/test-webui}"
-      UPSTREAM_PORT: "9621"
+    entrypoint: sh
     command:
-      - sh
       - -c
       - |
-        cat > /etc/nginx/conf.d/default.conf << 'NGINX'
-        server {
+        echo 'server {
             listen 9620;
             access_log /dev/stdout;
             error_log /dev/stderr;
 
-            # WebUI - proxy with full path
-            location ${LIGHTRAG_WEBUI_PATH}/ {
-                proxy_pass http://lightrag:${UPSTREAM_PORT}${LIGHTRAG_WEBUI_PATH}/;
+            location /test-webui/ {
+                proxy_pass http://lightrag:9621/test-webui/;
                 proxy_set_header Host $$host;
                 proxy_set_header X-Real-IP $$remote_addr;
                 proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $$scheme;
-                proxy_set_header X-Script-Name "";
             }
 
-            # API - strip prefix before proxying to LightRAG
-            # FastAPI root_path tells Swagger UI where the API lives
-            location ${LIGHTRAG_API_PREFIX}/ {
-                rewrite ^${LIGHTRAG_API_PREFIX}(/.*)$$ $$1 break;
-                proxy_pass http://lightrag:${UPSTREAM_PORT};
+            location /test-api/ {
+                rewrite ^/test-api(/.*)$$ $$1 break;
+                proxy_pass http://lightrag:9621;
                 proxy_set_header Host $$host;
                 proxy_set_header X-Real-IP $$remote_addr;
                 proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $$scheme;
-                proxy_set_header X-Script-Name ${LIGHTRAG_API_PREFIX};
+                proxy_set_header X-Script-Name /test-api;
             }
 
-            # Root redirect to WebUI
             location / {
-                return 302 ${LIGHTRAG_WEBUI_PATH}/;
+                return 302 /test-webui/;
             }
-        }
-        NGINX
-        nginx -g 'daemon off;'
-
+        }' > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
+    ports:
+      - "9620:9620"
     depends_on:
       - lightrag
 
   lightrag:
-    image: ghcr.io/hkuds/lightrag:latest
+    image: lightrag:nginx
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_WEBUI_PREFIX: /test-webui/
+        VITE_API_PREFIX: /test-api
     ports:
-      - "${HOST:-0.0.0.0}:9621:9621"
+      - "9621:9621"
     volumes:
+      - ./data/rag_storage:/tmp/rag_storage
+      - ./data/inputs:/tmp/inputs
       - ./.env:/app/.env
     environment:
       WORKING_DIR: "/tmp/rag_storage"
       INPUT_DIR: "/tmp/inputs"
       HOST: "0.0.0.0"
       PORT: "9621"
-      LIGHTRAG_API_PREFIX: "${LIGHTRAG_API_PREFIX:-/test-api}"
-      LIGHTRAG_WEBUI_PATH: "${LIGHTRAG_WEBUI_PATH:-/test-webui}"
+      LIGHTRAG_API_PREFIX: "/test-api"
+      LIGHTRAG_WEBUI_PATH: "/test-webui"
     extra_hosts:
       - "host.docker.internal:host-gateway"
