@@ -1,7 +1,8 @@
 import { ButtonVariantType } from '@/components/ui/Button'
+import { normalizeApiPrefix, normalizeWebuiPrefix } from '@/lib/pathPrefix'
 
-export const backendBaseUrl = import.meta.env.VITE_API_PREFIX || ''
-export const webuiPrefix = import.meta.env.VITE_WEBUI_PREFIX || '/webui/'
+export const backendBaseUrl = normalizeApiPrefix(import.meta.env.VITE_API_PREFIX)
+export const webuiPrefix = normalizeWebuiPrefix(import.meta.env.VITE_WEBUI_PREFIX)
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
