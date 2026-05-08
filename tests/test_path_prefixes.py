@@ -15,6 +15,43 @@ from fastapi.testclient import TestClient
 import pytest
 
 
+# Env vars that the project's `.env` may have populated (via load_dotenv at
+# import time of lightrag.api.config). Tests must be hermetic and not depend
+# on developer-local .env values, so we clear/override anything that affects
+# parse_args() / create_app().
+_ENV_VARS_TO_ISOLATE = (
+    "LLM_BINDING",
+    "EMBEDDING_BINDING",
+    "LLM_BINDING_HOST",
+    "LLM_BINDING_API_KEY",
+    "LLM_MODEL",
+    "EMBEDDING_BINDING_HOST",
+    "EMBEDDING_BINDING_API_KEY",
+    "EMBEDDING_MODEL",
+    "LIGHTRAG_API_PREFIX",
+    "LIGHTRAG_WEBUI_PATH",
+    "LIGHTRAG_KV_STORAGE",
+    "LIGHTRAG_VECTOR_STORAGE",
+    "LIGHTRAG_GRAPH_STORAGE",
+    "LIGHTRAG_DOC_STATUS_STORAGE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    """Isolate tests from developer-local .env pollution.
+
+    The lightrag.api.config module loads .env at import time, which can leave
+    bindings/hosts/keys in os.environ that mismatch what these tests assume.
+    Clear them, then set the minimal viable defaults (ollama bindings) so
+    create_app's binding validation passes without touching real services.
+    """
+    for var in _ENV_VARS_TO_ISOLATE:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LLM_BINDING", "ollama")
+    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+
+
 @pytest.fixture
 def mock_args_api_prefix():
     """Create mock args with API prefix."""
