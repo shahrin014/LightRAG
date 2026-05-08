@@ -299,10 +299,10 @@ def parse_args() -> argparse.Namespace:
 
     # Path prefix configuration
     parser.add_argument(
-        "--api-prefix",
+        "--api-path",
         type=str,
-        default=get_env_value("LIGHTRAG_API_PREFIX", ""),
-        help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
+        default=get_env_value("LIGHTRAG_API_PATH", ""),
+        help="API path prefix (e.g., /api/v1). Used in OpenAPI servers field. Default: none (root).",
     )
     parser.add_argument(
         "--webui-path",

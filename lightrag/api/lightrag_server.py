@@ -386,7 +386,7 @@ def create_app(args):
         + "\n\n[View ReDoc documentation](/redoc)"
     )
     # Get API prefix and WebUI path from args or env vars
-    api_prefix = getattr(args, "api_prefix", "") or ""
+    api_path = getattr(args, "api_path", "") or ""
     webui_path = getattr(args, "webui_path", "/webui") or "/webui"
 
     app_kwargs = {
@@ -396,7 +396,7 @@ def create_app(args):
         "openapi_url": "/openapi.json",
         "docs_url": None,  # custom endpoint for offline Swagger support
         "redoc_url": "/redoc",
-        "root_path": api_prefix if api_prefix else None,
+        "servers": [{"url": api_path}] if api_path else None,
         "lifespan": lifespan,
     }
 
@@ -1197,8 +1197,7 @@ def create_app(args):
         # Read X-Script-Name header from reverse proxy (e.g., nginx)
         # This allows Swagger UI to use the correct API prefix when accessed through a proxy
         script_name = request.headers.get("X-Script-Name", "")
-        # Use api_prefix as fallback for direct access with root_path set
-        prefix = script_name or (api_prefix if api_prefix else "")
+        prefix = script_name
 
         return get_swagger_ui_html(
             openapi_url=script_name + "/openapi.json" if script_name else app.openapi_url,
@@ -1396,24 +1395,6 @@ def create_app(args):
 
     # Custom StaticFiles class for smart caching
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
-        def __init__(self, *args, mount_path=None, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.mount_path = mount_path
-
-        async def __call__(self, scope, receive, send):
-            if self.mount_path:
-                path = scope.get("path", "")
-                root_path = scope.get("root_path", "")
-                # root_path already includes mount_path (Mount appends it)
-                # so use root_path directly as the prefix
-                prefixed = root_path if root_path else None
-                if prefixed and (path.startswith(prefixed + "/") or path == prefixed):
-                    scope["path"] = path[len(prefixed) :] or "/"
-                elif path.startswith(self.mount_path + "/") or path == self.mount_path:
-                    scope["path"] = path[len(self.mount_path) :] or "/"
-                scope["root_path"] = ""
-            await super().__call__(scope, receive, send)
-
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
 
@@ -1442,15 +1423,11 @@ def create_app(args):
             return response
 
     # Mount Swagger UI static files for offline support
-    # Use SmartStaticFiles with mount_path to handle root_path stripping
-    # (same approach as the WebUI mount)
     swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
     if swagger_static_dir.exists():
         app.mount(
             "/static/swagger-ui",
-            SmartStaticFiles(
-                directory=swagger_static_dir, mount_path="/static/swagger-ui"
-            ),
+            StaticFiles(directory=swagger_static_dir),
             name="swagger-ui-static",
         )
 
@@ -1461,7 +1438,7 @@ def create_app(args):
         app.mount(
             webui_path,
             SmartStaticFiles(
-                directory=static_dir, html=True, check_dir=True, mount_path=webui_path
+                directory=static_dir, html=True, check_dir=True
             ),  # Use SmartStaticFiles
             name="webui",
         )

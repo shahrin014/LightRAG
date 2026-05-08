@@ -56,7 +56,7 @@ services:
       INPUT_DIR: "/tmp/inputs"
       HOST: "0.0.0.0"
       PORT: "9621"
-      LIGHTRAG_API_PREFIX: "/test-api"
+      LIGHTRAG_API_PATH: "/test-api"
       LIGHTRAG_WEBUI_PATH: "/test-webui"
     extra_hosts:
       - "host.docker.internal:host-gateway"
